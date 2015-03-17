@@ -659,22 +659,21 @@ class RecordSchema(NamedSchema):
 
     # Add class members
     field_objects = RecordSchema.make_field_objects(fields, names)
-    self.set_prop('fields', field_objects)
+    self.fields = tuple(field_objects)
     if doc is not None: self.set_prop('doc', doc)
 
     if schema_type == 'record':
       names.default_namespace = old_default
 
+
+    self.__fields_dict__ = dict((field.name, field) for field in self.fields)
+
   # read-only properties
-  fields = property(lambda self: self.get_prop('fields'))
   doc = property(lambda self: self.get_prop('doc'))
 
   @property
   def fields_dict(self):
-    fields_dict = {}
-    for field in self.fields:
-      fields_dict[field.name] = field
-    return fields_dict
+    return dict(self.__fields_dict__)
 
   def to_json(self, names=None):
     if names is None:
@@ -767,11 +766,25 @@ def make_avsc_object(json_data, names=None):
     fail_msg = "Could not make an Avro Schema object from %s." % json_data
     raise SchemaParseException(fail_msg)
 
+__schema_cache__ = {}
+SCHEMA_CACHE_MAX_LENGTH = 20
+
 # TODO(hammer): make method for reading from a file?
 def parse(json_string):
   """Constructs the Schema from the JSON text."""
   # TODO(hammer): preserve stack trace from JSON parse
   # parse the JSON
+  try:
+    import hashlib
+  except ImportError:
+    import md5 as hashlib
+  digest = hashlib.md5(json_string).digest()
+  global __schema_cache__
+  try:
+    return __schema_cache__[digest]
+  except KeyError:
+    pass
+
   try:
     json_data = json.loads(json_string)
   except:
@@ -781,4 +794,8 @@ def parse(json_string):
   names = Names()
 
   # construct the Avro Schema object
-  return make_avsc_object(json_data, names)
+  if len(__schema_cache__) > SCHEMA_CACHE_MAX_LENGTH:
+      __schema_cache__ = {}
+  schema = make_avsc_object(json_data, names)
+  __schema_cache__[digest] = schema
+  return schema
