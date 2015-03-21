@@ -16,7 +16,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 try:
-  from setuptools import setup
+  from setuptools import setup, Extension
 except ImportError:
   from distutils.core import setup
 from sys import version_info
@@ -30,6 +30,7 @@ setup(
   version = '@AVRO_VERSION@',
   packages = ['avro',],
   package_dir = {'avro': 'src/avro'},
+  ext_modules = [Extension('avro.io', sources=['src/avro/io.c', ]), ],
   scripts = ["./scripts/avro"],
 
   # Project uses simplejson, so ensure that it gets installed or upgraded

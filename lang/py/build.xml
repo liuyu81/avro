@@ -79,7 +79,8 @@
       <fileset dir="${src.dir}">
         <exclude name="**/*.pyc"/>
         <exclude name="**/*.py~"/>
-      </fileset> 
+        <exclude name="**/*.so"/>
+      </fileset>
     </copy>
     <copy todir="${build.dir}/test">
       <fileset dir="${test.dir}">
