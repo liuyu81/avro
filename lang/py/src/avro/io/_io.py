@@ -32,14 +32,14 @@ __type_to_validator__ = {
     'boolean': lambda expected_schema, datum: isinstance(datum, bool),
     'string': lambda expected_schema, datum: isinstance(datum, basestring),
     'bytes': lambda expected_schema, datum: isinstance(datum, str),
-    'int': lambda expected_schema, datum: ((isinstance(datum, int) or isinstance(datum, long)) and INT_MIN_VALUE <= datum <= INT_MAX_VALUE),
-    'long': lambda expected_schema, datum: ((isinstance(datum, int) or isinstance(datum, long)) and LONG_MIN_VALUE <= datum <= LONG_MAX_VALUE),
-    'float': lambda expected_schema, datum: (isinstance(datum, int) or isinstance(datum, long) or isinstance(datum, float)),
-    'double': lambda expected_schema, datum: (isinstance(datum, int) or isinstance(datum, long) or isinstance(datum, float)),
+    'int': lambda expected_schema, datum: (isinstance(datum, (int, long)) and INT_MIN_VALUE <= datum <= INT_MAX_VALUE),
+    'long': lambda expected_schema, datum: (isinstance(datum, (int, long)) and LONG_MIN_VALUE <= datum <= LONG_MAX_VALUE),
+    'float': lambda expected_schema, datum: (isinstance(datum, (int, long)) or isinstance(datum, float)),
+    'double': lambda expected_schema, datum: (isinstance(datum, (int, long)) or isinstance(datum, float)),
     'fixed': lambda expected_schema, datum: isinstance(datum, str) and len(datum) == expected_schema.size,
     'enum': lambda expected_schema, datum: datum in expected_schema.symbols,
-    'array': lambda expected_schema, datum: (isinstance(datum, list) and all([validate(expected_schema.items, d) for d in datum])),
-    'map': lambda expected_schema, datum: (isinstance(datum, dict) and all([isinstance(k, basestring) for k in datum.keys()]) and all([validate(expected_schema.values, v) for v in datum.values()])),
+    'array': lambda expected_schema, datum: (isinstance(datum, (list, tuple)) and all([validate(expected_schema.items, d) for d in datum])),
+    'map': lambda expected_schema, datum: (isinstance(datum, dict) and all([isinstance(k, basestring) for k in datum.iterkeys()]) and all([validate(expected_schema.values, v) for v in datum.itervalues()])),
     'union': lambda expected_schema, datum: any([validate(s, datum) for s in expected_schema.schemas]),
     'error_union': lambda expected_schema, datum: any([validate(s, datum) for s in expected_schema.schemas]),
     'record': lambda expected_schema, datum: (isinstance(datum, dict) and all([validate(f.type, datum.get(f.name)) for f in expected_schema.fields])),
@@ -55,10 +55,8 @@ def validate(expected_schema, datum):
 
 
 def check_props(schema_one, schema_two, prop_list):
-    for prop in prop_list:
-        if getattr(schema_one, prop) != getattr(schema_two, prop):
-            return False
-    return True
+    return all([getattr(schema_one, prop) == getattr(schema_two, prop)
+                for prop in prop_list])
 
 
 __same_type_to_match_schema__ = {
@@ -81,6 +79,32 @@ __same_type_to_match_schema__ = {
     'error_union': lambda writers_schema, readers_schema: True,
 }
 
+
+__valid_schema_promotion__ = {
+    ('int', 'long'): True,
+    ('int', 'float'): True,
+    ('int', 'double'): True,
+    ('long', 'float'): True,
+    ('long', 'double'): True,
+    ('float', 'double'): True,
+}
+
+
+def __match_schema__(writers_schema, readers_schema):
+
+    w_type = writers_schema.type
+    r_type = readers_schema.type
+    if w_type == r_type:
+        return __same_type_to_match_schema__[w_type](writers_schema, readers_schema)
+
+    _opt_type_tuple = (w_type, r_type)
+    if 'union' in _opt_type_tuple or 'error_union' in _opt_type_tuple:
+        return True
+
+    global __valid_schema_promotion__
+    return _opt_type_tuple in __valid_schema_promotion__
+
+
 __match_schema_cache__ = {}
 
 
@@ -88,33 +112,23 @@ MATCH_SCHEMA_CACHE_MAX_LENGTH = 20
 
 
 def match_schema(writers_schema, readers_schema):
+    if writers_schema is readers_schema:
+        return True
+
     global __match_schema_cache__
+    global MATCH_SCHEMA_CACHE_MAX_LENGTH
+
     key = (writers_schema, readers_schema)
+    value = None
+
     try:
-        return __match_schema_cache__[key]
+        value = __match_schema_cache__[key]
     except KeyError:
         if len(__match_schema_cache__) > MATCH_SCHEMA_CACHE_MAX_LENGTH:
-            __match_schema_cache__ = {}
-        value = __match_schema__(writers_schema, readers_schema)
+            __match_schema_cache__.clear()
+        value = __match_schema__(*key)
         __match_schema_cache__[key] = value
-        return value
-
-def __match_schema__(writers_schema, readers_schema):
-    w_type = writers_schema.type
-    r_type = readers_schema.type
-    if w_type == r_type:
-        return __same_type_to_match_schema__[w_type](writers_schema, readers_schema)
-    elif 'union' in [w_type, r_type] or 'error_union' in [w_type, r_type]:
-        return True
-    
-    # Handle schema promotion
-    if w_type == 'int' and r_type in ['long', 'float', 'double']:
-        return True
-    elif w_type == 'long' and r_type in ['float', 'double']:
-        return True
-    elif w_type == 'float' and r_type == 'double':
-        return True
-    return False
+    return value
 
 
 def skip_data(writers_schema, decoder):
@@ -178,28 +192,39 @@ def read_array(writers_schema, readers_schema, decoder):
     is the absolute value of the count written.
     """
     read_items = []
-    block_count = decoder.read_long()
+
+    _opt_decoder_read_long = decoder.read_long
+    _opt_array_extend = read_items.extend
+    _opt_writers_schema_items = writers_schema.items
+    _opt_readers_schema_items = readers_schema.items
+
+    block_count = _opt_decoder_read_long()
     while block_count != 0:
         if block_count < 0:
             block_count = -block_count
-            block_size = decoder.read_long()
-        for i in range(block_count):
-            read_items.append(read_data(writers_schema.items,
-                                        readers_schema.items, decoder))
-        block_count = decoder.read_long()
+            block_size = _opt_decoder_read_long()
+        _opt_array_extend([read_data(_opt_writers_schema_items,
+                                     _opt_readers_schema_items, decoder)
+                           for i in range(block_count)])
+        block_count = _opt_decoder_read_long()
     return read_items
 
 
 def skip_array(writers_schema, decoder):
-    block_count = decoder.read_long()
+
+    _opt_decoder_read_long = decoder.read_long
+    _opt_decoder_skip = decoder.skip
+    _opt_writers_schema_items = writers_schema.items
+
+    block_count = _opt_decoder_read_long()
     while block_count != 0:
         if block_count < 0:
-            block_size = decoder.read_long()
-            decoder.skip(block_size)
+            block_size = _opt_decoder_read_long()
+            _opt_decoder_skip(block_size)
         else:
             for i in range(block_count):
-                skip_data(writers_schema.items, decoder)
-        block_count = decoder.read_long()
+                skip_data(_opt_writers_schema_items, decoder)
+        block_count = _opt_decoder_read_long()
 
 
 def read_map(writers_schema, readers_schema, decoder):
@@ -218,30 +243,40 @@ def read_map(writers_schema, readers_schema, decoder):
     is the absolute value of the count written.
     """
     read_items = {}
-    block_count = decoder.read_long()
+
+    _opt_decoder_read_long = decoder.read_long
+    _opt_decoder_read_utf8 = decoder.read_utf8
+    _opt_dict_update = read_items.update
+
+    block_count = _opt_decoder_read_long()
     while block_count != 0:
         if block_count < 0:
             block_count = -block_count
-            block_size = decoder.read_long()
-        for i in range(block_count):
-            key = decoder.read_utf8()
-            read_items[key] = read_data(writers_schema.values,
-                                        readers_schema.values, decoder)
-        block_count = decoder.read_long()
+            block_size = _opt_decoder_read_long()
+        _opt_dict_update([(_opt_decoder_read_utf8(),
+                           read_data(writers_schema.values,
+                                     readers_schema.values, decoder))
+                          for i in range(block_count)])
+        block_count = _opt_decoder_read_long()
     return read_items
 
 
 def skip_map(writers_schema, decoder):
-    block_count = decoder.read_long()
+
+    _opt_decoder_read_long = decoder.read_long
+    _opt_decoder_skip_utf8 = decoder.skip_utf8
+    _opt_decoder_skip = decoder.skip
+
+    block_count = _opt_decoder_read_long()
     while block_count != 0:
         if block_count < 0:
-            block_size = decoder.read_long()
-            decoder.skip(block_size)
+            block_size = _opt_decoder_read_long()
+            _opt_decoder_skip(block_size)
         else:
             for i in range(block_count):
-                decoder.skip_utf8()
+                _opt_decoder_skip_utf8()
                 skip_data(writers_schema.values, decoder)
-        block_count = decoder.read_long()
+        block_count = _opt_decoder_read_long()
 
 
 def read_default_value(field_schema, default_value):
@@ -261,17 +296,11 @@ def read_default_value(field_schema, default_value):
     elif field_schema.type in ['enum', 'fixed', 'string', 'bytes']:
         return default_value
     elif field_schema.type == 'array':
-        read_array = []
-        for json_val in default_value:
-            item_val = read_default_value(field_schema.items, json_val)
-            read_array.append(item_val)
-        return read_array
+        return list([read_default_value(field_schema.items, json_val)
+                     for json_val in default_value])
     elif field_schema.type == 'map':
-        read_map = {}
-        for key, json_val in default_value.items():
-            map_val = read_default_value(field_schema.values, json_val)
-            read_map[key] = map_val
-        return read_map
+        return dict([(key, read_default_value(field_schema.values, json_val))
+                     for key, json_val in default_value.iteritems()])
     elif field_schema.type in ['union', 'error_union']:
         return read_default_value(field_schema.schemas[0], default_value)
     elif field_schema.type == 'record':
@@ -295,23 +324,26 @@ def read_union(writers_schema, readers_schema, decoder):
     """
     # schema resolution
     index_of_schema = int(decoder.read_long())
-    if index_of_schema >= len(writers_schema.schemas):
+    try:
+        selected_writers_schema = writers_schema.schemas[index_of_schema]
+    except IndexError:
         fail_msg = "Can't access branch index %d for union with %d branches"\
             % (index_of_schema, len(writers_schema.schemas))
         raise SchemaResolutionException(fail_msg, writers_schema, readers_schema)
-    selected_writers_schema = writers_schema.schemas[index_of_schema]
-    
-    # read data
-    return read_data(selected_writers_schema, readers_schema, decoder)
+    else:
+        return read_data(selected_writers_schema, readers_schema, decoder)
 
 
 def skip_union(writers_schema, decoder):
     index_of_schema = int(decoder.read_long())
-    if index_of_schema >= len(writers_schema.schemas):
+    try:
+        selected_writers_schema = writers_schema.schemas[index_of_schema]
+    except IndexError:
         fail_msg = "Can't access branch index %d for union with %d branches"\
             % (index_of_schema, len(writers_schema.schemas))
         raise SchemaResolutionException(fail_msg, writers_schema)
-    return skip_data(writers_schema.schemas[index_of_schema], decoder)
+    else:
+        return skip_data(writers_schema.schemas[index_of_schema], decoder)
 
 
 def read_record(writers_schema, readers_schema, decoder):
@@ -335,8 +367,9 @@ def read_record(writers_schema, readers_schema, decoder):
     field's value is unset.
     """
     if readers_schema is writers_schema:
-        return dict((field.name, read_data(field.type, field.type, decoder)) for field in writers_schema.fields)
-    
+        return dict((field.name, read_data(field.type, field.type, decoder))
+                    for field in writers_schema.fields)
+
     # schema resolution
     readers_fields_dict = readers_schema.fields_dict
     read_record = {}
@@ -347,11 +380,11 @@ def read_record(writers_schema, readers_schema, decoder):
             read_record[field.name] = field_val
         except KeyError:
             skip_data(field.type, decoder)
-    
+
     # fill in default values
     if len(readers_fields_dict) > len(read_record):
         writers_fields_dict = writers_schema.fields_dict
-        for field_name, field in readers_fields_dict.items():
+        for field_name, field in readers_fields_dict.iteritems():
             if not writers_fields_dict.has_key(field_name):
                 if field.has_default:
                     field_val = read_default_value(field.type, field.default)
@@ -427,7 +460,7 @@ def read_data(writers_schema, readers_schema, decoder):
                     return read_data(writers_schema, s, decoder)
             fail_msg = 'Schemas do not match.'
             raise SchemaResolutionException(fail_msg, writers_schema, readers_schema)
-    
+
     # function dispatch for reading data based on type of writer's schema
     try:
         return __type_to_decoder__[writers_schema.type](writers_schema, readers_schema, decoder)
@@ -478,10 +511,12 @@ def write_array(writers_schema, datum, encoder):
     The actual count in this case
     is the absolute value of the count written.
     """
+    _opt_writers_schema_items = writers_schema.items
+
     if len(datum) > 0:
         encoder.write_long(len(datum))
         for item in datum:
-            write_data(writers_schema.items, item, encoder)
+            write_data(_opt_writers_schema_items, item, encoder)
     encoder.write_long(0)
 
 
@@ -500,11 +535,15 @@ def write_map(writers_schema, datum, encoder):
     The actual count in this case
     is the absolute value of the count written.
     """
+
+    _opt_encoder_write_utf8 = encoder.write_utf8
+    _opt_writers_schema_values = writers_schema.values
+
     if len(datum) > 0:
         encoder.write_long(len(datum))
-        for key, val in datum.items():
-            encoder.write_utf8(key)
-            write_data(writers_schema.values, val, encoder)
+        for key, val in datum.iteritems():
+            _opt_encoder_write_utf8(key)
+            write_data(_opt_writers_schema_values, val, encoder)
     encoder.write_long(0)
 
 
@@ -514,16 +553,23 @@ def write_union(writers_schema, datum, encoder):
     the zero-based position within the union of the schema of its value.
     The value is then encoded per the indicated schema within the union.
     """
-    # resolve union
+
     index_of_schema = -1
+    selected_schema = None
+
+    # resolve union
     for i, candidate_schema in enumerate(writers_schema.schemas):
         if validate(candidate_schema, datum):
             index_of_schema = i
-    if index_of_schema < 0: raise AvroTypeException(writers_schema, datum)
-    
+            selected_schema = candidate_schema
+            break
+
+    if selected_schema is None:
+        raise AvroTypeException(writers_schema, datum)
+
     # write data
     encoder.write_long(index_of_schema)
-    write_data(writers_schema.schemas[index_of_schema], datum, encoder)
+    write_data(selected_schema, datum, encoder)
 
 
 def write_record(writers_schema, datum, encoder):
